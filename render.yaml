@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: watchai-viz-generator
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: BROWSERBASE_API_KEY
+        sync: false  # Set manually in Render dashboard
+      - key: BROWSERBASE_PROJECT_ID
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: VERTEX_PROJECT_ID
+        value: firm-champion-495408-h6
