@@ -64,7 +64,10 @@ async function generateViaCanvas(query, opts) {
   };
 
   if (activeContextId) {
-    browserbaseSessionCreateParams.contextId = activeContextId;
+    browserbaseSessionCreateParams.context = {
+      id: activeContextId,
+      persist: true,
+    };
   }
 
   // Force a fresh Browserbase session by deleting any cached session ID in env
