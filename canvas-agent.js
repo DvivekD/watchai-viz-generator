@@ -63,10 +63,6 @@ async function generateViaCanvas(query, opts) {
   };
 
   if (activeContextId) {
-    browserbaseSessionCreateParams.context = {
-      id: activeContextId,
-      persist: true,
-    };
     browserbaseSessionCreateParams.browserSettings = {
       context: {
         id: activeContextId,

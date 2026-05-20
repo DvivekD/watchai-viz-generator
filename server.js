@@ -100,7 +100,7 @@ app.post('/generate', async (req, res) => {
 
 // ── Direct Gemini API call (fallback) ────────────────────────────────────────
 async function callGeminiApi(query, classification, apiKey) {
-  const model = 'gemini-3.5-flash';
+  const model = 'gemini-2.5-flash';
   const region = 'us-central1';
   const projectId = process.env.VERTEX_PROJECT_ID || 'firm-champion-495408-h6';
 
