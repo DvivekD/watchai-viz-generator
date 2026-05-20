@@ -27,7 +27,7 @@ app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
 // ── Main generation endpoint ─────────────────────────────────────────────────
 app.post('/generate', async (req, res) => {
-  const { query, classification, apiKey } = req.body;
+  const { query, classification, apiKey, contextId } = req.body;
 
   if (!query) {
     return res.status(400).json({ error: 'query is required' });
@@ -45,16 +45,18 @@ app.post('/generate', async (req, res) => {
     try {
       console.log('[Generator] Attempting Canvas automation...');
       
-      const html = await generateViaCanvas(query, {
+      const { html, contextId: resContextId } = await generateViaCanvas(query, {
         browserbaseApiKey,
         browserbaseProjectId,
         geminiApiKey,
+        contextId,
       });
 
       if (html && html.length > 500) {
         console.log(`[Generator] Canvas success! ${html.length} chars in ${((Date.now() - startTime) / 1000).toFixed(1)}s`);
         return res.json({
           html,
+          contextId: resContextId,
           source: 'canvas',
           validated: true,
           durationMs: Date.now() - startTime,

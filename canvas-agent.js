@@ -24,9 +24,56 @@ async function generateViaCanvas(query, opts) {
     browserbaseApiKey,
     browserbaseProjectId,
     geminiApiKey,
+    contextId,
   } = opts;
 
   console.log(`[Canvas] Starting for: "${query}"`);
+
+  let activeContextId = contextId;
+
+  if (!activeContextId) {
+    console.log('[Canvas] No contextId provided, creating a new Browserbase context...');
+    try {
+      const res = await fetch('https://api.browserbase.com/v1/contexts', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-BB-API-Key': browserbaseApiKey,
+        },
+        body: JSON.stringify({ projectId: browserbaseProjectId }),
+      });
+      if (!res.ok) {
+        const errText = await res.text();
+        console.error(`[Canvas] Failed to create Browserbase context: ${res.status} - ${errText}`);
+      } else {
+        const data = await res.json();
+        activeContextId = data.id;
+        console.log(`[Canvas] Created Browserbase context: ${activeContextId}`);
+      }
+    } catch (err) {
+      console.error(`[Canvas] Error creating Browserbase context: ${err.message}`);
+    }
+  } else {
+    console.log(`[Canvas] Using provided contextId: ${activeContextId}`);
+  }
+
+  const browserbaseSessionCreateParams = {
+    projectId: browserbaseProjectId,
+    keepAlive: true,
+  };
+
+  if (activeContextId) {
+    browserbaseSessionCreateParams.context = {
+      id: activeContextId,
+      persist: true,
+    };
+    browserbaseSessionCreateParams.browserSettings = {
+      context: {
+        id: activeContextId,
+        persist: true,
+      }
+    };
+  }
 
   const stagehand = new Stagehand({
     env: 'BROWSERBASE',
@@ -34,10 +81,7 @@ async function generateViaCanvas(query, opts) {
     projectId: browserbaseProjectId,
     modelName: 'google/gemini-2.0-flash',
     modelClientOptions: { apiKey: geminiApiKey },
-    browserbaseSessionCreateParams: {
-      projectId: browserbaseProjectId,
-      keepAlive: true,
-    },
+    browserbaseSessionCreateParams,
     enableCaching: true,
     verbose: 1,
   });
@@ -57,10 +101,36 @@ async function generateViaCanvas(query, opts) {
     await page.waitForTimeout(3000);
 
     // Check if logged in — look for the chat input
-    const loginCheck = await stagehand.observe(
+    let loggedIn = false;
+    const initialCheck = await stagehand.observe(
       'Is there an "Ask Gemini" input field or text area visible?'
     );
-    if (!loginCheck || loginCheck.length === 0) {
+    if (initialCheck && initialCheck.length > 0) {
+      loggedIn = true;
+    } else {
+      console.log(`[Canvas] ⚠️ Google Sign-In required! Please open the Browserbase Live View immediately and complete the Google login: https://www.browserbase.com/sessions/${stagehand.browserbaseSessionID}`);
+      
+      const maxLoginWaitMs = 180000; // 3 minutes
+      const loginPollIntervalMs = 5000; // 5 seconds
+      const maxLoginPolls = Math.ceil(maxLoginWaitMs / loginPollIntervalMs);
+      
+      for (let p = 0; p < maxLoginPolls; p++) {
+        console.log(`[Canvas] Waiting for Google login... (${(p+1)*5}s/180s) Check Live View: https://www.browserbase.com/sessions/${stagehand.browserbaseSessionID}`);
+        await page.waitForTimeout(loginPollIntervalMs);
+        
+        const check = await stagehand.observe(
+          'Is there an "Ask Gemini" input field or text area visible?'
+        );
+        if (check && check.length > 0) {
+          loggedIn = true;
+          console.log('[Canvas] Google login completed! Proceeding with visualization...');
+          await page.waitForTimeout(3000);
+          break;
+        }
+      }
+    }
+
+    if (!loggedIn) {
       throw new Error(
         'NOT_LOGGED_IN: Log in via Browserbase dashboard → ' +
         `https://www.browserbase.com/sessions/${stagehand.browserbaseSessionID}`
@@ -301,7 +371,7 @@ async function generateViaCanvas(query, opts) {
     }
 
     console.log(`[Canvas] ✅ Extracted ${html.length} chars of HTML`);
-    return html;
+    return { html, contextId: activeContextId };
 
   } finally {
     try { await stagehand.close(); } catch (e) {}
