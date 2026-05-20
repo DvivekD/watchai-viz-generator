@@ -84,7 +84,7 @@ async function generateViaCanvas(query, opts) {
     modelName: 'google/gemini-1.5-pro',
     modelClientOptions: { apiKey: activeGeminiApiKey },
     browserbaseSessionCreateParams,
-    enableCaching: true,
+    enableCaching: false,
     verbose: 1,
   });
 
