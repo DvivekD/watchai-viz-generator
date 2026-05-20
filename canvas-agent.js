@@ -64,13 +64,11 @@ async function generateViaCanvas(query, opts) {
   };
 
   if (activeContextId) {
-    browserbaseSessionCreateParams.browserSettings = {
-      context: {
-        id: activeContextId,
-        persist: true,
-      }
-    };
+    browserbaseSessionCreateParams.contextId = activeContextId;
   }
+
+  // Force a fresh Browserbase session by deleting any cached session ID in env
+  delete process.env.BROWSERBASE_SESSION_ID;
 
   const activeGeminiApiKey = geminiApiKey || process.env.GEMINI_API_KEY;
   if (!activeGeminiApiKey) {
