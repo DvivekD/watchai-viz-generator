@@ -25,6 +25,7 @@ async function generateViaCanvas(query, opts) {
     browserbaseProjectId,
     geminiApiKey,
     contextId,
+    classification,
   } = opts;
 
   console.log(`[Canvas] Starting for: "${query}"`);
@@ -71,12 +72,17 @@ async function generateViaCanvas(query, opts) {
     };
   }
 
+  const activeGeminiApiKey = geminiApiKey || process.env.GEMINI_API_KEY;
+  if (!activeGeminiApiKey) {
+    throw new Error('No Google Gemini API key provided for Stagehand model routing');
+  }
+
   const stagehand = new Stagehand({
     env: 'BROWSERBASE',
     apiKey: browserbaseApiKey,
     projectId: browserbaseProjectId,
-    modelName: 'google/gemini-2.0-flash',
-    modelClientOptions: { apiKey: geminiApiKey },
+    modelName: 'google/gemini-1.5-pro',
+    modelClientOptions: { apiKey: activeGeminiApiKey },
     browserbaseSessionCreateParams,
     enableCaching: true,
     verbose: 1,
@@ -91,14 +97,14 @@ async function generateViaCanvas(query, opts) {
     // STEP 1: Navigate to Gemini
     // ═══════════════════════════════════════════════════════════════════
     await page.goto('https://gemini.google.com', {
-      waitUntil: 'networkidle',
-      timeout: 30000,
+      waitUntil: 'load',
+      timeout: 60000,
     });
     await page.waitForTimeout(3000);
 
     // Check if logged in — look for the chat input
     let loggedIn = false;
-    const initialCheck = await stagehand.observe(
+    const initialCheck = await page.observe(
       'Is there an "Ask Gemini" input field or text area visible?'
     );
     if (initialCheck && initialCheck.length > 0) {
@@ -114,7 +120,7 @@ async function generateViaCanvas(query, opts) {
         console.log(`[Canvas] Waiting for Google login... (${(p+1)*5}s/180s) Check Live View: https://www.browserbase.com/sessions/${stagehand.browserbaseSessionID}`);
         await page.waitForTimeout(loginPollIntervalMs);
         
-        const check = await stagehand.observe(
+        const check = await page.observe(
           'Is there an "Ask Gemini" input field or text area visible?'
         );
         if (check && check.length > 0) {
@@ -135,18 +141,39 @@ async function generateViaCanvas(query, opts) {
     console.log('[Canvas] Logged in ✓');
 
     // ═══════════════════════════════════════════════════════════════════
+    // STEP 1.5: Switch from Flash to Pro/Advanced Model
+    // ═══════════════════════════════════════════════════════════════════
+    console.log('[Canvas] Switching to Gemini Pro/Advanced model...');
+    try {
+      // Click the model selector dropdown next to the microphone icon in the chat input area
+      await page.act({
+        action: 'Click the model selector dropdown (usually says "Flash" or has a dropdown arrow next to the word "Flash") located at the right end of the chat input area',
+      });
+      await page.waitForTimeout(1500);
+
+      // Select Gemini Advanced or Gemini Pro from the list
+      await page.act({
+        action: 'Click "Gemini Advanced" or "Gemini Pro" or the premium model option from the dropdown menu list',
+      });
+      await page.waitForTimeout(2000);
+      console.log('[Canvas] Successfully switched to Pro/Advanced model ✓');
+    } catch (modelErr) {
+      console.log(`[Canvas] Warning: Could not switch to Pro model, proceeding with default: ${modelErr.message}`);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
     // STEP 2: Click "+" → Click "Canvas"
     // ═══════════════════════════════════════════════════════════════════
     console.log('[Canvas] Opening Canvas mode...');
 
     // Click the "+" button in the chat input area to open the tools menu
-    await stagehand.act({
+    await page.act({
       action: 'Click the "+" button or plus icon on the left side of the chat input area to open the tools menu',
     });
     await page.waitForTimeout(1500);
 
     // Click "Canvas" from the dropdown menu
-    await stagehand.act({
+    await page.act({
       action: 'Click "Canvas" from the dropdown menu. It says "Code, write, or make slides"',
     });
     await page.waitForTimeout(1500);
@@ -156,11 +183,23 @@ async function generateViaCanvas(query, opts) {
     // ═══════════════════════════════════════════════════════════════════
     // STEP 3: Type the prompt and send
     // ═══════════════════════════════════════════════════════════════════
-    const canvasPrompt = buildCanvasPrompt(query);
+    let canvasPrompt = '';
+    if (classification && classification.system_instruction) {
+      console.log('[Canvas] Using bespoke reprompt system instruction from classification');
+      canvasPrompt = `Create a self-contained interactive 3D visualization for: "${query}"
+
+Bespoke Design & Technical Requirements:
+${classification.system_instruction}
+
+Ensure it is a complete, single-file HTML, works instantly, and outputs only the code block.`;
+    } else {
+      console.log('[Canvas] Falling back to default canvas prompt');
+      canvasPrompt = buildCanvasPrompt(query);
+    }
     console.log(`[Canvas] Typing prompt (${canvasPrompt.length} chars)...`);
 
     // Click the chat input field
-    await stagehand.act({
+    await page.act({
       action: 'Click on the chat input field or text area where you type messages',
     });
     await page.waitForTimeout(500);
@@ -170,7 +209,7 @@ async function generateViaCanvas(query, opts) {
     await page.waitForTimeout(500);
 
     // Send the message
-    await stagehand.act({
+    await page.act({
       action: 'Click the send button (arrow icon) to submit the message, or press Enter',
     });
 
@@ -190,7 +229,7 @@ async function generateViaCanvas(query, opts) {
       const elapsed = ((i + 1) * pollInterval / 1000).toFixed(0);
 
       // Check for Canvas panel appearing on the right side
-      const canvasPanel = await stagehand.observe(
+      const canvasPanel = await page.observe(
         'Is there a Canvas panel on the right side of the screen showing either: ' +
         '1. A code editor with HTML code, or ' +
         '2. A preview/rendered visualization, or ' +
@@ -205,7 +244,7 @@ async function generateViaCanvas(query, opts) {
       }
 
       // Check if still generating
-      const generating = await stagehand.observe(
+      const generating = await page.observe(
         'Is there a loading indicator, spinning animation, typing dots, or "stop generating" button visible?'
       );
 
@@ -213,7 +252,7 @@ async function generateViaCanvas(query, opts) {
         console.log(`[Canvas] Still generating... (${elapsed}s)`);
       } else if (i > 5) {
         // After 40s with no loading indicator and no canvas, check for errors
-        const errorCheck = await stagehand.observe(
+        const errorCheck = await page.observe(
           'Is there an error message, "Try again" button, or "something went wrong" text visible?'
         );
         if (errorCheck && errorCheck.length > 0) {
@@ -235,7 +274,7 @@ async function generateViaCanvas(query, opts) {
     console.log('[Canvas] Switching to Code view...');
 
     try {
-      await stagehand.act({
+      await page.act({
         action: 'Click the "Code" button or tab at the top-right of the Canvas panel to show the raw source code instead of the preview',
       });
       await page.waitForTimeout(2000);
@@ -254,7 +293,7 @@ async function generateViaCanvas(query, opts) {
 
     try {
       // Click inside the code editor area
-      await stagehand.act({
+      await page.act({
         action: 'Click inside the code editor area where the HTML source code is displayed',
       });
       await page.waitForTimeout(500);
@@ -332,7 +371,7 @@ async function generateViaCanvas(query, opts) {
     if (!html || html.length < 300) {
       console.log('[Canvas] Trying Stagehand extract...');
       try {
-        const result = await stagehand.extract({
+        const result = await page.extract({
           instruction: 'Extract the COMPLETE HTML source code visible in the Canvas code editor. ' +
             'Get everything from <!DOCTYPE html> to </html>. Return the full raw code, do not truncate.',
           schema: z.object({

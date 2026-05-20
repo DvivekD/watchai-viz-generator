@@ -50,6 +50,7 @@ app.post('/generate', async (req, res) => {
         browserbaseProjectId,
         geminiApiKey,
         contextId,
+        classification,
       });
 
       if (html && html.length > 500) {
