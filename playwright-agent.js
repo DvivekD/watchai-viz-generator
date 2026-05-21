@@ -111,6 +111,8 @@ async function generateViaPlaywright(query, opts = {}) {
       page.locator('textarea[aria-label*="prompt"]')
     ).or(
       page.locator('.ql-editor')
+    ).or(
+      page.locator('rich-textarea, [placeholder*="Ask Gemini"], [aria-label*="Ask Gemini"], [data-placeholder*="Ask Gemini"], text="Ask Gemini"')
     );
     await chatInput.first().waitFor({ state: 'visible', timeout: 15000 }).catch(async () => {
       await page.screenshot({ path: './tmp/err-not-logged-in.png' });
