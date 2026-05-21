@@ -107,16 +107,7 @@ async function generateViaPlaywright(query, opts = {}) {
     }
 
     // Wait for the chat input bar (proves we're logged in)
-    const chatInput = page.locator(
-      '[contenteditable="true"]:visible, ' +
-      'textarea[aria-label*="prompt"]:visible, ' +
-      '.ql-editor:visible, ' +
-      'rich-textarea:visible, ' +
-      '[placeholder*="Ask Gemini"]:visible, ' +
-      '[aria-label*="Ask Gemini"]:visible, ' +
-      '[data-placeholder*="Ask Gemini"]:visible, ' +
-      'text="Ask Gemini"'
-    ).first();
+    const chatInput = page.getByRole('textbox').last();
     await chatInput.waitFor({ state: 'visible', timeout: 15000 }).catch(async () => {
       await page.screenshot({ path: './tmp/err-not-logged-in.png' });
       throw new Error('NOT_LOGGED_IN: Could not find chat input. Run "node login.js" first.');
