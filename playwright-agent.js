@@ -40,8 +40,7 @@ async function generateViaPlaywright(query, opts) {
       '--disable-dev-shm-usage',
       '--no-sandbox',
       '--disable-setuid-sandbox',
-      '--disable-gpu',
-      '--single-process'
+      '--disable-gpu'
     ]
   });
 
@@ -54,7 +53,7 @@ async function generateViaPlaywright(query, opts) {
 
     // STEP 1: Navigate to Gemini
     console.log('[Canvas] Navigating to gemini.google.com...');
-    await page.goto('https://gemini.google.com', { waitUntil: 'networkidle', timeout: 30000 });
+    await page.goto('https://gemini.google.com', { waitUntil: 'domcontentloaded', timeout: 30000 });
     
     // Check if we hit the login page
     const currentUrl = page.url();
@@ -76,24 +75,21 @@ async function generateViaPlaywright(query, opts) {
     console.log('[Canvas] Logged in and on chat page ✓');
 
     // STEP 2: Click "+" → Click "Canvas"
-    console.log('[Canvas] Opening Canvas mode...');
-    
-    const plusButton = page.locator('button[aria-label*="more"]').or(
-      page.locator('button:has(mat-icon:has-text("add"))')
-    ).or(
-      page.locator('button mat-icon:has-text("add")')
-    ).first();
-
-    await plusButton.click({ timeout: 5000 });
-    await page.waitForTimeout(1000); // Wait for menu animation
-    
-    const canvasOption = page.locator('text=Canvas').or(
-      page.locator('text="Code, write, or make slides"')
-    ).first();
-    await canvasOption.click({ timeout: 5000 });
-
-    console.log('[Canvas] Canvas mode activated ✓');
-    await page.waitForTimeout(1000);
+    console.log('[Canvas] Attempting to open Canvas mode...');
+    try {
+      const plusButton = page.locator('button[aria-label*="more"], button[aria-label*="upload"], button[aria-label*="Attach"], button:has(mat-icon:has-text("add")), button mat-icon:has-text("add")').first();
+      await plusButton.click({ timeout: 3000 });
+      await page.waitForTimeout(1000); // Wait for menu animation
+      
+      const canvasOption = page.locator('text=Canvas').or(
+        page.locator('text="Code, write, or make slides"')
+      ).first();
+      await canvasOption.click({ timeout: 3000 });
+      console.log('[Canvas] Canvas mode activated ✓');
+      await page.waitForTimeout(1000);
+    } catch (e) {
+      console.log('[Canvas] Canvas button not found (UI may have changed). Proceeding with standard chat prompt...');
+    }
 
     // STEP 3: Type the prompt and send
     const canvasPrompt = buildCanvasPrompt(query);
