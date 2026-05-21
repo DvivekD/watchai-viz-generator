@@ -40,12 +40,21 @@ app.post('/generate', async (req, res) => {
   console.log(`[Generator] Using transformed prompt length: ${finalPrompt.length} chars`);
 
   const jobId = crypto.randomUUID();
-  JOBS.set(jobId, { status: 'generating', startTime });
+  JOBS.set(jobId, { status: 'generating', startTime, logs: [] });
 
   // ── Start Playwright Canvas automation in background ───────────────────
   console.log(`[Generator] Job ${jobId} started Playwright automation...`);
   
-  generateViaPlaywright(finalPrompt, { storageState })
+  generateViaPlaywright(finalPrompt, { 
+    storageState,
+    onStageUpdate: (stageMsg) => {
+      const job = JOBS.get(jobId);
+      if (job) {
+        job.stage = stageMsg;
+        job.logs.push(`[${new Date().toLocaleTimeString()}] ${stageMsg}`);
+      }
+    }
+  })
     .then(({ html, storageState: newStorageState }) => {
       if (html && html.length > 500) {
         console.log(`[Generator] Job ${jobId} Canvas success! ${html.length} chars in ${((Date.now() - startTime) / 1000).toFixed(1)}s`);

@@ -22,11 +22,18 @@ const PROFILE_DIR = path.join(__dirname, 'chrome-profile');
 
 /**
  * Generate a visualization by automating Google Gemini Canvas.
+ * @param {string} query The transformed user prompt
+ * @param {object} opts Options { storageState, useProfile, onStageUpdate }
  */
 async function generateViaPlaywright(query, opts = {}) {
-  const { storageState, useProfile } = opts;
+  const { storageState, useProfile, onStageUpdate } = opts;
 
-  console.log(`[Canvas] Starting Playwright for: "${query}"`);
+  const logStage = (msg) => {
+    console.log(msg);
+    if (onStageUpdate) onStageUpdate(msg.replace(/^\[Canvas\]\s*/, ''));
+  };
+
+  logStage(`[Canvas] Starting Playwright for: "${query.slice(0, 30)}..."`);
 
   // Decide mode: persistent profile (local) or storageState (server)
   const hasProfile = fs.existsSync(PROFILE_DIR) && fs.readdirSync(PROFILE_DIR).length > 0;
@@ -135,7 +142,7 @@ async function generateViaPlaywright(query, opts = {}) {
     }
 
     // ── STEP 3: Click "+" → Select "Canvas" ─────────────────────────────
-    console.log('[Canvas] Opening Canvas mode...');
+    logStage('[Canvas] Opening Canvas mode...');
     try {
       // Use Playwright's spatial selector to find the button visually to the left of the input (max 150px away)
       // This completely avoids clicking random buttons in the sidebar.
@@ -179,7 +186,7 @@ async function generateViaPlaywright(query, opts = {}) {
     }
 
     // ── STEP 4: Type raw prompt and send ─────────────────────────────────
-    console.log(`[Canvas] Typing prompt (${query.length} chars)...`);
+    logStage(`[Canvas] Typing prompt...`);
 
     // Re-locate the input (may have changed after Canvas activation)
     const input = page.locator('[contenteditable="true"]').or(
@@ -209,7 +216,7 @@ async function generateViaPlaywright(query, opts = {}) {
     await page.screenshot({ path: './tmp/step6-prompt-sent.png' });
 
     // ── STEP 5: Switch to Code View & Wait for </html> ──────────────────
-    console.log('[Canvas] Waiting for Canvas panel to open...');
+    logStage('[Canvas] Waiting for Canvas generation...');
     
     // Wait for the "Code" toggle button to appear (exact match, visible)
     const codeBtn = page.getByText('Code', { exact: true }).filter({ state: 'visible' }).first();
@@ -244,7 +251,7 @@ async function generateViaPlaywright(query, opts = {}) {
       if (switched) break;
     }
     
-    console.log(`[Canvas] Switched to Code view (verified: ${switched}) ✓ — polling for </html>...`);
+    logStage(`[Canvas] Polling for generation to finish...`);
 
     const MAX_WAIT_MS = 600000; // 10 min max
     const POLL_INTERVAL_MS = 10000; // every 10s
@@ -272,7 +279,7 @@ async function generateViaPlaywright(query, opts = {}) {
 
       if (html && html.includes('</html>')) {
         const elapsed = ((Date.now() - startTime) / 1000).toFixed(0);
-        console.log(`[Canvas] </html> detected in clipboard! Generation complete. (${elapsed}s)`);
+        logStage(`[Canvas] Generation complete. (${elapsed}s)`);
         generationDone = true;
         break;
       }
