@@ -74,7 +74,13 @@ async function generateViaPlaywright(query, opts = {}) {
 
     browser = await chromium.launch({
       headless: true,
-      args: ['--disable-dev-shm-usage', '--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu']
+      args: [
+        '--disable-dev-shm-usage', 
+        '--no-sandbox', 
+        '--disable-setuid-sandbox', 
+        '--disable-gpu',
+        '--disable-blink-features=AutomationControlled'
+      ]
     });
     context = await browser.newContext({
       storageState: parsedState,
@@ -96,6 +102,7 @@ async function generateViaPlaywright(query, opts = {}) {
     
     const currentUrl = page.url();
     if (currentUrl.includes('accounts.google.com') || currentUrl.includes('signin')) {
+      await page.screenshot({ path: './tmp/err-not-logged-in.png' });
       throw new Error('NOT_LOGGED_IN: Redirected to login page. Run "node login.js" first.');
     }
 
