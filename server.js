@@ -9,6 +9,7 @@ const express = require('express');
 const { generateViaPlaywright } = require('./playwright-agent');
 const { buildPrompt } = require('./prompt-builder');
 const crypto = require('crypto');
+const path = require('path');
 
 const app = express();
 app.use(express.json({ limit: '5mb' })); // Increased limit for full storageState payload
