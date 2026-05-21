@@ -47,6 +47,7 @@ app.post('/generate', async (req, res) => {
   
   generateViaPlaywright(finalPrompt, { 
     storageState,
+    useProfile: false,
     onStageUpdate: (stageMsg) => {
       const job = JOBS.get(jobId);
       if (job) {

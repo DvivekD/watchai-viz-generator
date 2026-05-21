@@ -1,0 +1,7 @@
+node_modules
+tmp
+chrome-profile
+.env
+storageState.json
+test-output.html
+.git
