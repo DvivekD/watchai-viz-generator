@@ -12,6 +12,7 @@ const crypto = require('crypto');
 
 const app = express();
 app.use(express.json({ limit: '5mb' })); // Increased limit for full storageState payload
+app.use('/tmp', express.static(path.join(__dirname, 'tmp')));
 
 const JOBS = new Map();
 
