@@ -64,7 +64,8 @@ async function generateViaPlaywright(query, opts = {}) {
     let parsedState = undefined;
     if (storageState) {
       try {
-        parsedState = JSON.parse(storageState);
+        // Handle both string (from raw HTTP) and object (from Express JSON parser)
+        parsedState = typeof storageState === 'string' ? JSON.parse(storageState) : storageState;
         console.log(`[Canvas] Loaded storageState (cookies: ${parsedState.cookies?.length || 0})`);
       } catch (e) {
         console.warn(`[Canvas] Failed to parse storageState: ${e.message}`);
