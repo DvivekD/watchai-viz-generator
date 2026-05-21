@@ -8,9 +8,12 @@
 const express = require('express');
 const { generateViaPlaywright } = require('./playwright-agent');
 const { buildPrompt } = require('./prompt-builder');
+const crypto = require('crypto');
 
 const app = express();
 app.use(express.json({ limit: '5mb' })); // Increased limit for full storageState payload
+
+const JOBS = new Map();
 
 const PORT = process.env.PORT || 3000;
 
@@ -36,108 +39,56 @@ app.post('/generate', async (req, res) => {
   const finalPrompt = buildPrompt(query);
   console.log(`[Generator] Using transformed prompt length: ${finalPrompt.length} chars`);
 
-  const geminiApiKey = apiKey || process.env.GEMINI_API_KEY;
+  const jobId = crypto.randomUUID();
+  JOBS.set(jobId, { status: 'generating', startTime });
 
-  // ── Try Playwright Canvas automation first ───────────────────────────
-  try {
-    console.log('[Generator] Attempting Playwright Canvas automation...');
-    
-    const { html, storageState: newStorageState } = await generateViaPlaywright(finalPrompt, {
-      storageState,
+  // ── Start Playwright Canvas automation in background ───────────────────
+  console.log(`[Generator] Job ${jobId} started Playwright automation...`);
+  
+  generateViaPlaywright(finalPrompt, { storageState })
+    .then(({ html, storageState: newStorageState }) => {
+      if (html && html.length > 500) {
+        console.log(`[Generator] Job ${jobId} Canvas success! ${html.length} chars in ${((Date.now() - startTime) / 1000).toFixed(1)}s`);
+        JOBS.set(jobId, {
+          status: 'complete',
+          html,
+          storageState: newStorageState,
+          source: 'canvas',
+          validated: true,
+          durationMs: Date.now() - startTime,
+        });
+      } else {
+        console.warn(`[Generator] Job ${jobId} output too short.`);
+        JOBS.set(jobId, { status: 'error', error: 'Output too short' });
+      }
+    })
+    .catch((err) => {
+      console.warn(`[Generator] Job ${jobId} Canvas failed: ${err.message}`);
+      if (err.message.includes('NOT_LOGGED_IN')) {
+        JOBS.set(jobId, { status: 'error', error: err.message, action: 'Login to Google using local-login.js', code: 401 });
+      } else {
+        JOBS.set(jobId, { status: 'error', error: err.message });
+      }
     });
 
-    if (html && html.length > 500) {
-      console.log(`[Generator] Canvas success! ${html.length} chars in ${((Date.now() - startTime) / 1000).toFixed(1)}s`);
-      return res.json({
-        html,
-        storageState: newStorageState,
-        source: 'canvas',
-        validated: true,
-        durationMs: Date.now() - startTime,
-      });
-    }
-
-    console.warn('[Generator] Canvas returned too-short output, falling back to API');
-  } catch (canvasErr) {
-    console.warn(`[Generator] Canvas failed: ${canvasErr.message}`);
-    
-    // If not logged in, return 401 so the client can notify the user
-    if (canvasErr.message.includes('NOT_LOGGED_IN')) {
-      return res.status(401).json({
-        error: canvasErr.message,
-        action: 'Login to Google using local-login.js',
-      });
-    }
-  }
-
-  // ── Fallback: Direct Gemini API ──────────────────────────────────────
-  if (!geminiApiKey) {
-    return res.status(400).json({ error: 'Canvas failed and no Gemini API key provided for fallback' });
-  }
-
-  try {
-    console.log('[Generator] Falling back to Gemini API...');
-    const html = await callGeminiApi(query, classification || {}, geminiApiKey);
-    
-    return res.json({
-      html,
-      source: 'api',
-      validated: false,
-      durationMs: Date.now() - startTime,
-    });
-  } catch (apiErr) {
-    console.error(`[Generator] API fallback also failed: ${apiErr.message}`);
-    return res.status(500).json({ error: apiErr.message });
-  }
+  // Return immediately
+  return res.status(202).json({
+    status: 'generating',
+    jobId,
+    message: 'Generation started in background'
+  });
 });
 
-// ── Direct Gemini API call (fallback) ────────────────────────────────────────
-async function callGeminiApi(query, classification, apiKey) {
-  const model = 'gemini-3.5-flash';
-  const region = 'us-central1';
-  const projectId = process.env.VERTEX_PROJECT_ID || 'firm-champion-495408-h6';
-
-  const title = classification.title || query;
-  const brief = classification.brief || '';
-
-  const systemPrompt = `You are a world-class 3D visualization engineer. Create stunning, interactive Three.js scenes for the Apple Watch (198x242 viewport).
-Requirements: Complete self-contained HTML, Three.js from CDN (r128), dark bg #050505, MeshStandardMaterial with emissive, particle effects, scroll interactivity, glassmorphic HUD, global scope vars, call init() at bottom, call window.__hideWatchVizLoader after first render.`;
-
-  const finalPrompt = buildPrompt(query);
-  const userPrompt = `${finalPrompt}\n\n(Extra context: Title: ${title}, Brief: ${brief})\n\nOutput ONLY raw HTML, no markdown.`;
-
-  const url = `https://${region}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${region}/publishers/google/models/${model}:generateContent`;
-
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-    body: JSON.stringify({
-      systemInstruction: { role: 'user', parts: [{ text: systemPrompt }] },
-      contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
-      generationConfig: {
-        maxOutputTokens: 32000,
-        temperature: 0.35,
-        topP: 0.9,
-        thinkingConfig: { thinkingBudget: 8192 },
-      },
-    }),
-  });
-
-  if (!res.ok) throw new Error(`Gemini API ${res.status}: ${(await res.text()).slice(0, 200)}`);
-
-  const data = await res.json();
-  const parts = data?.candidates?.[0]?.content?.parts || [];
-  let html = '';
-  for (const part of parts) {
-    if (part.text && !part.thought) html += part.text;
+// ── Status polling endpoint ──────────────────────────────────────────────────
+app.get('/status/:jobId', (req, res) => {
+  const job = JOBS.get(req.params.jobId);
+  if (!job) {
+    return res.status(404).json({ error: 'Job not found or expired' });
   }
-
-  html = html.trim().replace(/^```(?:html)?\s*/i, '').replace(/\s*```$/i, '').trim();
-  const idx = html.search(/<!DOCTYPE\s+html/i);
-  if (idx > 0) html = html.slice(idx);
-
-  return html;
-}
+  
+  // Return the current job state
+  res.json(job);
+});
 
 // ── Start server ─────────────────────────────────────────────────────────────
 const server = app.listen(PORT, () => {
