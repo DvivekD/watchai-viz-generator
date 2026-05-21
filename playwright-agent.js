@@ -226,7 +226,7 @@ async function generateViaPlaywright(query, opts = {}) {
     logStage('[Canvas] Waiting for Canvas generation...');
     
     // Wait for the "Code" toggle button to appear (exact match, visible)
-    const codeBtn = page.getByText('Code', { exact: true }).filter({ state: 'visible' }).first();
+    const codeBtn = page.getByText('Code', { exact: true }).and(page.locator(':visible')).first();
 
     let waitedMs = 0;
     while (waitedMs < 300000) {
@@ -250,7 +250,12 @@ async function generateViaPlaywright(query, opts = {}) {
     console.log('[Canvas] Clicking Code toggle...');
     let switched = false;
     for (let i = 0; i < 3; i++) {
-      await codeBtn.click({ force: true });
+      try {
+        await codeBtn.click({ force: true, timeout: 5000 });
+      } catch (e) {
+        console.log('[Canvas] Standard click failed, using evaluate click...');
+        await codeBtn.evaluate(node => node.click()).catch(() => {});
+      }
       await page.waitForTimeout(1500);
       
       // Verify it switched by checking if code elements exist in the DOM
