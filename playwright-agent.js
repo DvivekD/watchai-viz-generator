@@ -1,255 +1,352 @@
 /**
  * Canvas Agent — Automates Google Gemini Canvas using Playwright
  * 
- * Replaces Stagehand/Browserbase with raw Playwright.
- * Uses storageState JSON to persist Google login cookies across Render free tier ephemeral restarts.
+ * Exact flow (matches Gemini UI as of May 2026):
+ *   1. Navigate → wait for chat input (proves logged in)
+ *   2. Click model dropdown → select "3.1 Pro"
+ *   3. Click "+" → select "Canvas"
+ *   4. Type raw user prompt → send
+ *   5. Canvas code panel opens automatically, poll until </html> appears
+ *   6. Click code area → Ctrl+A → Ctrl+C → read clipboard
+ * 
+ * Two modes:
+ *   LOCAL:  Uses persistent Chrome profile (./chrome-profile/) — no cookie hassle
+ *   SERVER: Uses storageState JSON (for Render deployment)
  */
 
 const { chromium } = require('playwright');
+const path = require('path');
+const fs = require('fs');
+
+const PROFILE_DIR = path.join(__dirname, 'chrome-profile');
 
 /**
  * Generate a visualization by automating Google Gemini Canvas.
- * 
- * @param {string} query - The prompt for the visualization
- * @param {object} opts - Options including storageState
- * @returns {Promise<{html: string, storageState: string}>}
  */
-async function generateViaPlaywright(query, opts) {
-  const { storageState } = opts;
-  
+async function generateViaPlaywright(query, opts = {}) {
+  const { storageState, useProfile } = opts;
+
   console.log(`[Canvas] Starting Playwright for: "${query}"`);
 
-  // Parse storageState if provided as JSON string
-  let parsedState = undefined;
-  if (storageState) {
-    try {
-      parsedState = JSON.parse(storageState);
-      console.log(`[Canvas] Loaded storageState (cookies: ${parsedState.cookies?.length || 0})`);
-    } catch (e) {
-      console.warn(`[Canvas] Failed to parse storageState JSON: ${e.message}`);
-    }
+  // Decide mode: persistent profile (local) or storageState (server)
+  const hasProfile = fs.existsSync(PROFILE_DIR) && fs.readdirSync(PROFILE_DIR).length > 0;
+  const useLocalProfile = useProfile !== false && hasProfile;
+
+  let context, browser, page;
+
+  if (useLocalProfile) {
+    // ── LOCAL MODE: Use persistent Chrome profile ──────────────────────
+    console.log('[Canvas] Using persistent Chrome profile (local mode)');
+    context = await chromium.launchPersistentContext(PROFILE_DIR, {
+      channel: 'chrome',
+      headless: true,
+      viewport: { width: 1280, height: 900 },
+      args: [
+        '--disable-blink-features=AutomationControlled',
+        '--disable-dev-shm-usage',
+        '--no-sandbox',
+      ],
+      ignoreDefaultArgs: ['--enable-automation'],
+    });
+    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+    page = context.pages()[0] || await context.newPage();
+    browser = null; // persistent context doesn't have a separate browser object
+
   } else {
-    console.log('[Canvas] No storageState provided (will likely need login)');
+    // ── SERVER MODE: Use storageState JSON ──────────────────────────────
+    let parsedState = undefined;
+    if (storageState) {
+      try {
+        parsedState = JSON.parse(storageState);
+        console.log(`[Canvas] Loaded storageState (cookies: ${parsedState.cookies?.length || 0})`);
+      } catch (e) {
+        console.warn(`[Canvas] Failed to parse storageState: ${e.message}`);
+      }
+    }
+
+    browser = await chromium.launch({
+      headless: true,
+      args: ['--disable-dev-shm-usage', '--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu']
+    });
+    context = await browser.newContext({
+      storageState: parsedState,
+      viewport: { width: 1280, height: 900 }
+    });
+    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+    page = await context.newPage();
   }
 
-  // Launch Chromium
-  // Disable dev-shm-usage and sandbox to help with memory constraints on Render
-  const browser = await chromium.launch({
-    headless: true,
-    args: [
-      '--disable-dev-shm-usage',
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-gpu'
-    ]
-  });
-
   try {
-    const context = await browser.newContext({
-      storageState: parsedState,
-      viewport: { width: 1280, height: 800 }
-    });
-    const page = await context.newPage();
+    // Ensure tmp dir exists for screenshots
+    const tmpDir = path.join(__dirname, 'tmp');
+    if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
 
-    // STEP 1: Navigate to Gemini
+    // ── STEP 1: Navigate to Gemini ──────────────────────────────────────
     console.log('[Canvas] Navigating to gemini.google.com...');
     await page.goto('https://gemini.google.com', { waitUntil: 'domcontentloaded', timeout: 30000 });
     
-    // Check if we hit the login page
     const currentUrl = page.url();
     if (currentUrl.includes('accounts.google.com') || currentUrl.includes('signin')) {
-      throw new Error('NOT_LOGGED_IN: Must log in first using the /login endpoint');
+      throw new Error('NOT_LOGGED_IN: Redirected to login page. Run "node login.js" first.');
     }
 
-    // Determine the chat input selector
+    // Wait for the chat input bar (proves we're logged in)
     const chatInput = page.locator('[contenteditable="true"]').or(
       page.locator('textarea[aria-label*="prompt"]')
     ).or(
       page.locator('.ql-editor')
     );
-
-    // Wait for the chat input to be visible (confirms we are logged in and page loaded)
     await chatInput.first().waitFor({ state: 'visible', timeout: 15000 }).catch(() => {
-      throw new Error('NOT_LOGGED_IN: Could not find chat input. Session may have expired.');
+      throw new Error('NOT_LOGGED_IN: Could not find chat input. Run "node login.js" first.');
     });
-    console.log('[Canvas] Logged in and on chat page ✓');
 
-    // STEP 2: Click "+" → Click "Canvas"
-    console.log('[Canvas] Attempting to open Canvas mode...');
+    // Extra login check: look for "Sign in" button
+    const signInBtn = page.locator('a:has-text("Sign in"), button:has-text("Sign in")').first();
+    const isSignedOut = await signInBtn.isVisible({ timeout: 1000 }).catch(() => false);
+    if (isSignedOut) {
+      await page.screenshot({ path: './tmp/err-not-logged-in.png' });
+      throw new Error('NOT_LOGGED_IN: "Sign in" button visible. Run "node login.js" first.');
+    }
+
+    console.log('[Canvas] Logged in ✓');
+    await page.screenshot({ path: './tmp/step1-loaded.png' });
+
+    // ── STEP 2: Select "3.1 Pro" model ──────────────────────────────────
+    console.log('[Canvas] Selecting 3.1 Pro model...');
     try {
-      const plusButton = page.locator('button[aria-label*="more"], button[aria-label*="upload"], button[aria-label*="Attach"], button:has(mat-icon:has-text("add")), button mat-icon:has-text("add")').first();
-      await plusButton.click({ timeout: 3000 });
-      await page.waitForTimeout(1000); // Wait for menu animation
-      
-      const canvasOption = page.locator('text=Canvas').or(
-        page.locator('text="Code, write, or make slides"')
-      ).first();
-      await canvasOption.click({ timeout: 3000 });
-      console.log('[Canvas] Canvas mode activated ✓');
+      // The model button is near the right side of the input bar, shows current model name
+      const modelBtn = page.locator('button').filter({ hasText: /Flash|Pro|Gemini|Model/i }).last();
+      await modelBtn.waitFor({ state: 'visible', timeout: 5000 });
+      await modelBtn.click({ force: true });
+      console.log('[Canvas] Model dropdown opened ✓');
       await page.waitForTimeout(1000);
+      await page.screenshot({ path: './tmp/step2-model-dropdown.png' });
+
+      // Click "3.1 Pro"
+      const proItem = page.getByText('3.1 Pro').first();
+      await proItem.waitFor({ state: 'visible', timeout: 3000 }).catch(() => {});
+      await proItem.click({ force: true, timeout: 5000 });
+      console.log('[Canvas] 3.1 Pro selected ✓');
+      await page.waitForTimeout(1500);
+      await page.screenshot({ path: './tmp/step3-model-selected.png' });
     } catch (e) {
-      console.log('[Canvas] Canvas button not found (UI may have changed). Proceeding with standard chat prompt...');
+      console.log(`[Canvas] Model selection failed: ${e.message}. Proceeding with default.`);
+      await page.screenshot({ path: './tmp/err-model-select.png' });
     }
 
-    // STEP 3: Type the prompt and send
-    const canvasPrompt = buildCanvasPrompt(query);
-    console.log(`[Canvas] Typing prompt (${canvasPrompt.length} chars)...`);
-    
-    // Some editors need click before fill, others don't.
-    const input = chatInput.first();
-    await input.click();
-    
-    // Depending on the element type, fill or press keys
-    const tag = await input.evaluate(el => el.tagName.toLowerCase());
-    if (tag === 'textarea' || tag === 'input') {
-        await input.fill(canvasPrompt);
-    } else {
-        // For contenteditable, typing might be safer if fill clears styling weirdly, but Playwright's fill usually handles it.
-        // Let's use fill, if it fails, fallback to keyboard type.
-        try {
-           await input.fill(canvasPrompt);
-        } catch {
-           await page.keyboard.type(canvasPrompt, { delay: 1 });
-        }
+    // ── STEP 3: Click "+" → Select "Canvas" ─────────────────────────────
+    console.log('[Canvas] Opening Canvas mode...');
+    try {
+      // Use Playwright's spatial selector to find the button visually to the left of the input (max 150px away)
+      // This completely avoids clicking random buttons in the sidebar.
+      let plusBtn = page.locator('button:left-of([contenteditable="true"], 150)').filter({ state: 'visible' }).first();
+      
+      if (await plusBtn.count() === 0) {
+         plusBtn = page.locator('button:left-of(textarea, 150)').filter({ state: 'visible' }).first();
+      }
+      if (await plusBtn.count() === 0) {
+         plusBtn = page.locator('button:left-of(.ql-editor, 150)').filter({ state: 'visible' }).first();
+      }
+      if (await plusBtn.count() === 0) {
+         // Ultimate fallback: strictly match upload/attach tooltips
+         plusBtn = page.locator('button[aria-label*="upload" i], button[aria-label*="attach" i]').filter({ state: 'visible' }).first();
+      }
+
+      await plusBtn.waitFor({ state: 'visible', timeout: 5000 });
+      await plusBtn.click({ force: true });
+      console.log('[Canvas] "+" menu opened ✓');
+      await page.waitForTimeout(1000);
+      await page.screenshot({ path: './tmp/step4-plus-menu.png' });
+
+      // Click "Canvas" in the menu
+      // Make this extremely robust: Try by role + name, then by class + text, then by raw substring
+      let canvasItem = page.getByRole('menuitem', { name: /Canvas/i }).first();
+      if (await canvasItem.count() === 0) {
+        canvasItem = page.locator('.mat-mdc-menu-item, [role="menuitem"], li').filter({ hasText: /Canvas/i }).first();
+      }
+      if (await canvasItem.count() === 0) {
+        canvasItem = page.locator('text=Canvas').last(); // last() usually picks the deepest text node, which is the button itself
+      }
+      
+      await canvasItem.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
+      await canvasItem.click({ force: true, timeout: 5000 });
+      console.log('[Canvas] Canvas mode activated ✓');
+      await page.waitForTimeout(1500);
+      await page.screenshot({ path: './tmp/step5-canvas-selected.png' });
+    } catch (e) {
+      console.log(`[Canvas] Canvas selection failed: ${e.message}. Sending in standard mode.`);
+      await page.screenshot({ path: './tmp/err-canvas-select.png' });
     }
-    
+
+    // ── STEP 4: Type raw prompt and send ─────────────────────────────────
+    console.log(`[Canvas] Typing prompt (${query.length} chars)...`);
+
+    // Re-locate the input (may have changed after Canvas activation)
+    const input = page.locator('[contenteditable="true"]').or(
+      page.locator('textarea[aria-label*="prompt" i]')
+    ).or(
+      page.locator('textarea[aria-label*="write" i]')
+    ).or(
+      page.locator('.ql-editor')
+    ).first();
+    await input.click({ force: true });
+    await page.waitForTimeout(300);
+
+    try {
+      await input.fill(query);
+    } catch {
+      await page.keyboard.type(query, { delay: 1 });
+    }
     await page.waitForTimeout(500);
 
-    // Send the message
-    const sendButton = page.locator('button[aria-label*="Send"]').or(
-      page.locator('button[aria-label*="submit"]')
-    ).or(
-      page.locator('button mat-icon:has-text("send")')
+    // Click send
+    const sendBtn = page.locator(
+      'button[aria-label*="Send" i], button[aria-label*="submit" i]'
     ).first();
-    await sendButton.click();
+    await sendBtn.click({ force: true });
+    console.log('[Canvas] Prompt sent ✓');
+    await page.waitForTimeout(1500);
+    await page.screenshot({ path: './tmp/step6-prompt-sent.png' });
 
-    console.log('[Canvas] Prompt sent ✓ Waiting for generation...');
-
-    // STEP 4: Wait for Canvas to generate
-    // Canvas takes 30s-3min+ to generate. Wait up to 5 minutes.
-    console.log('[Canvas] Waiting for Canvas code panel...');
+    // ── STEP 5: Switch to Code View & Wait for </html> ──────────────────
+    console.log('[Canvas] Waiting for Canvas panel to open...');
     
-    // Wait for the code block or code editor to appear
-    const codePanel = page.locator('[class*="code-block"], [class*="code-editor"], pre code, .monaco-editor').first();
-    await codePanel.waitFor({ state: 'visible', timeout: 300000 }); // 5 minutes
-    console.log('[Canvas] Canvas panel detected ✓');
-    
-    // Give it a moment to finish streaming/rendering
-    await page.waitForTimeout(5000); 
+    // Wait for the "Code" toggle button to appear (exact match, visible)
+    const codeBtn = page.getByText('Code', { exact: true }).filter({ state: 'visible' }).first();
 
-    // Check if it's still generating (stop button visible) and wait for it to disappear
-    const stopButton = page.locator('button[aria-label*="Stop"]').first();
-    if (await stopButton.isVisible().catch(() => false)) {
-        console.log('[Canvas] Waiting for generation to complete...');
-        await stopButton.waitFor({ state: 'hidden', timeout: 120000 }).catch(() => {});
-    }
-
-    // STEP 5: Click "Code" tab if needed
-    console.log('[Canvas] Switching to Code view (if applicable)...');
-    try {
-      const codeTab = page.locator('button:has-text("Code"), [role="tab"]:has-text("Code")').first();
-      if (await codeTab.isVisible({ timeout: 2000 })) {
-        await codeTab.click();
-        await page.waitForTimeout(2000);
-        console.log('[Canvas] Code view active ✓');
+    let waitedMs = 0;
+    while (waitedMs < 300000) {
+      if (await codeBtn.isVisible()) {
+        break;
       }
-    } catch (e) {
-      console.log('[Canvas] Code tab not found or not needed');
+      await page.waitForTimeout(5000);
+      waitedMs += 5000;
+      console.log(`[Canvas] Still waiting for Canvas to open... (${waitedMs / 1000}s)`);
+      // Save a debug screenshot so we can see what's happening
+      await page.screenshot({ path: './tmp/debug-waiting-canvas.png' });
     }
 
-    // STEP 6: Extract the code
-    console.log('[Canvas] Extracting code...');
-    
-    let html = await page.evaluate(() => {
-        const codeSelectors = [
-          '.code-block code',
-          '.code-content',
-          '[class*="code-editor"] code',
-          '[class*="code-editor"] pre',
-          '[class*="CodeMirror"] .CodeMirror-code',
-          '.monaco-editor .view-lines',
-          '.monaco-editor',
-          'code-block',
-          'pre code',
-          'code',
-          'pre',
-        ];
+    if (!(await codeBtn.isVisible())) {
+       console.log('[Canvas] Error: Canvas panel never opened after 5 minutes.');
+       process.exit(1);
+    }
+    console.log('[Canvas] Code toggle button found! Waiting 2s for UI to settle...');
+    await page.waitForTimeout(2000); // Let the Canvas slide-in animation finish
 
-        let longestCode = '';
-        for (const sel of codeSelectors) {
-          const els = document.querySelectorAll(sel);
-          els.forEach(el => {
-            const text = (el.textContent || el.innerText || '').trim();
-            if (text.length > longestCode.length && (text.includes('<!DOCTYPE') || text.includes('<html'))) {
-              longestCode = text;
-            }
+    console.log('[Canvas] Clicking Code toggle...');
+    let switched = false;
+    for (let i = 0; i < 3; i++) {
+      await codeBtn.click({ force: true });
+      await page.waitForTimeout(1500);
+      
+      // Verify it switched by checking if code elements exist in the DOM
+      switched = await page.evaluate(() => document.querySelectorAll('.monaco-editor, pre code, [class*="code-editor"], [class*="code-block"]').length > 0);
+      if (switched) break;
+    }
+    
+    console.log(`[Canvas] Switched to Code view (verified: ${switched}) ✓ — polling for </html>...`);
+
+    const MAX_WAIT_MS = 600000; // 10 min max
+    const POLL_INTERVAL_MS = 10000; // every 10s
+    const startTime = Date.now();
+    let generationDone = false;
+    let html = '';
+
+    while (Date.now() - startTime < MAX_WAIT_MS) {
+      // Find the editor to focus it
+      const codeArea = page.locator('.monaco-editor, pre code, [class*="code-editor"], [class*="code-block"]').first();
+      await codeArea.click({ force: true }).catch(() => {});
+      await page.waitForTimeout(500);
+
+      // Extract code via clipboard to bypass Monaco virtualization
+      await page.keyboard.press('Control+A');
+      await page.waitForTimeout(300);
+      await page.keyboard.press('Control+C');
+      await page.waitForTimeout(500);
+
+      try {
+        html = await page.evaluate(() => navigator.clipboard.readText());
+      } catch (e) {
+        console.log(`[Canvas] Clipboard read failed: ${e.message}`);
+      }
+
+      if (html && html.includes('</html>')) {
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(0);
+        console.log(`[Canvas] </html> detected in clipboard! Generation complete. (${elapsed}s)`);
+        generationDone = true;
+        break;
+      }
+
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(0);
+      console.log(`[Canvas] Still generating... (${elapsed}s elapsed)`);
+      await page.waitForTimeout(POLL_INTERVAL_MS);
+    }
+
+    if (!generationDone) {
+      console.warn('[Canvas] Timed out waiting for </html>. Proceeding with what we have...');
+    }
+
+    await page.waitForTimeout(1000);
+    await page.screenshot({ path: './tmp/step6-generation-done.png' });
+
+    // Fallback: Copy code button (if clipboard loop failed)
+    if (!html || html.length < 500) {
+      try {
+        const copyBtn = page.locator('button[aria-label*="Copy" i], button:has-text("Copy code")').first();
+        if (await copyBtn.isVisible({ timeout: 2000 })) {
+          await copyBtn.click();
+          await page.waitForTimeout(1000);
+          html = await page.evaluate(() => navigator.clipboard.readText());
+          console.log(`[Canvas] Fallback Copy button used: ${html.length} chars`);
+        }
+      } catch (e) {}
+    }
+
+    // Fallback: DOM extraction (if all clipboard attempts fail)
+    if (!html || html.length < 500) {
+      console.log('[Canvas] Falling back to DOM extraction...');
+      html = await page.evaluate(() => {
+        const sels = ['pre code', 'code', 'pre', '.monaco-editor .view-lines', '.monaco-editor'];
+        let longest = '';
+        for (const s of sels) {
+          document.querySelectorAll(s).forEach(el => {
+            const t = (el.textContent || '').trim();
+            if (t.length > longest.length && (t.includes('<!DOCTYPE') || t.includes('<html'))) longest = t;
           });
         }
-        
-        // Shadow DOM check
-        const allElements = document.querySelectorAll('*');
-        allElements.forEach(el => {
-          if (el.shadowRoot) {
-            const shadowCode = el.shadowRoot.querySelectorAll('code, pre');
-            shadowCode.forEach(sc => {
-              const text = (sc.textContent || '').trim();
-              if (text.length > longestCode.length && (text.includes('<!DOCTYPE') || text.includes('<html'))) {
-                longestCode = text;
-              }
-            });
-          }
-        });
+        return longest;
+      });
+    }
 
-        return longestCode;
-    });
-
-    html = html.trim();
+    // ── Clean up ────────────────────────────────────────────────────────
+    html = (html || '').trim();
     html = html.replace(/^```(?:html|xml)?\s*/i, '').replace(/\s*```$/i, '').trim();
 
     const doctypeIdx = html.search(/<!DOCTYPE\s+html/i);
-    const htmlIdx = html.search(/<html\b/i);
-    const startIdx = doctypeIdx >= 0 ? doctypeIdx : htmlIdx;
+    const htmlIdx2 = html.search(/<html\b/i);
+    const startIdx = doctypeIdx >= 0 ? doctypeIdx : htmlIdx2;
     if (startIdx > 0) html = html.slice(startIdx);
+
+    if (html.includes('</html>')) {
+      console.log('[Canvas] ✅ Full HTML with closing </html> tag');
+    } else {
+      console.warn('[Canvas] ⚠ HTML may be truncated (no </html>)');
+    }
 
     if (!html || html.length < 300) {
       throw new Error(`Code extraction failed — got ${html.length} chars.`);
     }
 
-    console.log(`[Canvas] ✅ Extracted ${html.length} chars of HTML`);
+    console.log(`[Canvas] ✅ Extracted ${html.length} chars`);
 
-    // STEP 7: Save state and return
+    // Save updated state for server mode
     const newState = await context.storageState();
-    const newStateJson = JSON.stringify(newState);
-    
-    return { html, storageState: newStateJson };
+    return { html, storageState: JSON.stringify(newState) };
 
   } finally {
-    try { await browser.close(); } catch (e) {}
+    try { await context.close(); } catch (e) {}
+    if (browser) try { await browser.close(); } catch (e) {}
   }
-}
-
-/**
- * Build a prompt that makes Canvas produce a watch-optimized Three.js visualization
- */
-function buildCanvasPrompt(query) {
-  return `Create a self-contained HTML file with Three.js for: ${query}
-
-Technical requirements:
-- Single HTML file, all CSS in <style>, all JS in <script>
-- Load Three.js from CDN: https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js
-- Dark background #050505, viewport: 198x242px (Apple Watch)
-- Use MeshStandardMaterial with emissive glow, particle effects (300+ THREE.Points), smooth auto-orbit camera
-- Add wheel/scroll event listener — for layered/exploded views: scroll controls explodeFactor (0-1 separating layers). For others: scroll controls zoom.
-- Glassmorphic HUD: backdrop-filter:blur(12px), rgba(0,0,0,0.5) bg, 9px font, border-radius:10px
-- Status pill at bottom center showing state ("Scroll to explore", current layer name, etc.)
-- HSL color palette: cyan(195°), emerald(150°), amber(35°), violet(270°)
-- WebGLRenderer: antialias:false, powerPreference:"low-power", pixelRatio max 1.5
-- All variables/functions in GLOBAL scope (var, not let/const at top level). No modules, no IIFEs.
-- Call init() at bottom of script. After first render call: window.__hideWatchVizLoader && window.__hideWatchVizLoader("first-render")
-- NEVER use optional chaining (?.) on left side of assignments (breaks Safari/WebKit)
-- Under 200 meshes, under 2000 points. No GLTF, no textures, no external libs except Three.js.
-
-Make it visually cinematic — glowing emissive materials, particle atmosphere, smooth animations, professional quality.`;
 }
 
 module.exports = { generateViaPlaywright };

@@ -1,4 +1,7 @@
-const { chromium } = require('playwright');
+const { chromium } = require('playwright-extra');
+const stealth = require('puppeteer-extra-plugin-stealth')();
+chromium.use(stealth);
+
 const fs = require('fs');
 const path = require('path');
 
@@ -16,14 +19,18 @@ const path = require('path');
   console.log('Waiting for you to reach the Gemini chat interface...');
   console.log('======================================================\n');
   
-  // Wait until we see the chat input which indicates successful login
-  try {
-    await page.waitForSelector('[contenteditable="true"], textarea[aria-label*="prompt"], .ql-editor', { timeout: 300000 });
-  } catch (e) {
-    console.error('Timed out waiting for login. Please try again.');
-    await browser.close();
-    process.exit(1);
-  }
+  const readline = require('readline');
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+
+  await new Promise(resolve => {
+    rl.question('Press ENTER here in the terminal once you have fully logged in and see the Gemini chat screen... ', () => {
+      rl.close();
+      resolve();
+    });
+  });
   
   console.log('Logged in successfully! Saving storage state...');
   const state = await context.storageState();

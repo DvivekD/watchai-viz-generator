@@ -7,6 +7,7 @@
 
 const express = require('express');
 const { generateViaPlaywright } = require('./playwright-agent');
+const { buildPrompt } = require('./prompt-builder');
 
 const app = express();
 app.use(express.json({ limit: '5mb' })); // Increased limit for full storageState payload
@@ -30,7 +31,10 @@ app.post('/generate', async (req, res) => {
   }
 
   const startTime = Date.now();
-  console.log(`[Generator] Starting for: "${query}"`);
+  console.log(`[Generator] Original Query: "${query}"`);
+
+  const finalPrompt = buildPrompt(query);
+  console.log(`[Generator] Using transformed prompt length: ${finalPrompt.length} chars`);
 
   const geminiApiKey = apiKey || process.env.GEMINI_API_KEY;
 
@@ -38,7 +42,7 @@ app.post('/generate', async (req, res) => {
   try {
     console.log('[Generator] Attempting Playwright Canvas automation...');
     
-    const { html, storageState: newStorageState } = await generateViaPlaywright(query, {
+    const { html, storageState: newStorageState } = await generateViaPlaywright(finalPrompt, {
       storageState,
     });
 
@@ -99,7 +103,8 @@ async function callGeminiApi(query, classification, apiKey) {
   const systemPrompt = `You are a world-class 3D visualization engineer. Create stunning, interactive Three.js scenes for the Apple Watch (198x242 viewport).
 Requirements: Complete self-contained HTML, Three.js from CDN (r128), dark bg #050505, MeshStandardMaterial with emissive, particle effects, scroll interactivity, glassmorphic HUD, global scope vars, call init() at bottom, call window.__hideWatchVizLoader after first render.`;
 
-  const userPrompt = `Create: "${query}" (${title}). ${brief}. Output ONLY raw HTML, no markdown.`;
+  const finalPrompt = buildPrompt(query);
+  const userPrompt = `${finalPrompt}\n\n(Extra context: Title: ${title}, Brief: ${brief})\n\nOutput ONLY raw HTML, no markdown.`;
 
   const url = `https://${region}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${region}/publishers/google/models/${model}:generateContent`;
 
