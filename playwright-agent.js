@@ -220,7 +220,7 @@ async function generateViaPlaywright(query, opts = {}) {
     await sendBtn.click({ force: true });
     console.log('[Canvas] Prompt sent ✓');
     await page.waitForTimeout(1500);
-    await page.screenshot({ path: './tmp/step6-prompt-sent.png' });
+    await page.screenshot({ path: './tmp/step6-prompt-sent.png', timeout: 5000 }).catch(() => {});
 
     // ── STEP 5: Switch to Code View & Wait for </html> ──────────────────
     logStage('[Canvas] Waiting for Canvas generation...');
@@ -237,7 +237,7 @@ async function generateViaPlaywright(query, opts = {}) {
       waitedMs += 5000;
       logStage(`[Canvas] Still waiting for Canvas to open... (${waitedMs / 1000}s)`);
       // Save a debug screenshot so we can see what's happening
-      await page.screenshot({ path: './tmp/debug-waiting-canvas.png' });
+      await page.screenshot({ path: './tmp/debug-waiting-canvas.png', timeout: 5000 }).catch(() => {});
     }
 
     if (!(await codeBtn.isVisible())) {
@@ -306,7 +306,7 @@ async function generateViaPlaywright(query, opts = {}) {
     }
 
     await page.waitForTimeout(1000);
-    await page.screenshot({ path: './tmp/step6-generation-done.png' });
+    await page.screenshot({ path: './tmp/step6-generation-done.png', timeout: 5000 }).catch(() => {});
 
     // Fallback: Copy code button (if clipboard loop failed)
     if (!html || html.length < 500) {
