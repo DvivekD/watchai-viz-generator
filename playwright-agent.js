@@ -105,7 +105,8 @@ async function generateViaPlaywright(query, opts = {}) {
     ).or(
       page.locator('.ql-editor')
     );
-    await chatInput.first().waitFor({ state: 'visible', timeout: 15000 }).catch(() => {
+    await chatInput.first().waitFor({ state: 'visible', timeout: 15000 }).catch(async () => {
+      await page.screenshot({ path: './tmp/err-not-logged-in.png' });
       throw new Error('NOT_LOGGED_IN: Could not find chat input. Run "node login.js" first.');
     });
 
