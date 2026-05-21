@@ -229,25 +229,25 @@ async function generateViaPlaywright(query, opts = {}) {
     const codeBtn = page.getByText('Code', { exact: true }).and(page.locator(':visible')).first();
 
     let waitedMs = 0;
-    while (waitedMs < 300000) {
+    while (waitedMs < 480000) {
       if (await codeBtn.isVisible()) {
         break;
       }
       await page.waitForTimeout(5000);
       waitedMs += 5000;
-      console.log(`[Canvas] Still waiting for Canvas to open... (${waitedMs / 1000}s)`);
+      logStage(`[Canvas] Still waiting for Canvas to open... (${waitedMs / 1000}s)`);
       // Save a debug screenshot so we can see what's happening
       await page.screenshot({ path: './tmp/debug-waiting-canvas.png' });
     }
 
     if (!(await codeBtn.isVisible())) {
-       console.log('[Canvas] Error: Canvas panel never opened after 5 minutes.');
+       console.log('[Canvas] Error: Canvas panel never opened after 8 minutes.');
        process.exit(1);
     }
-    console.log('[Canvas] Code toggle button found! Waiting 2s for UI to settle...');
+    logStage('[Canvas] Code toggle button found! Waiting 2s for UI to settle...');
     await page.waitForTimeout(2000); // Let the Canvas slide-in animation finish
 
-    console.log('[Canvas] Clicking Code toggle...');
+    logStage('[Canvas] Clicking Code toggle...');
     let switched = false;
     for (let i = 0; i < 3; i++) {
       try {
@@ -297,7 +297,7 @@ async function generateViaPlaywright(query, opts = {}) {
       }
 
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(0);
-      console.log(`[Canvas] Still generating... (${elapsed}s elapsed)`);
+      logStage(`[Canvas] Still generating... (${elapsed}s elapsed)`);
       await page.waitForTimeout(POLL_INTERVAL_MS);
     }
 
