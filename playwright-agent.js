@@ -14,7 +14,9 @@
  *   SERVER: Uses storageState JSON (for Render deployment)
  */
 
-const { chromium } = require('playwright');
+const { chromium } = require('playwright-extra');
+const stealth = require('puppeteer-extra-plugin-stealth')();
+chromium.use(stealth);
 const path = require('path');
 const fs = require('fs');
 
@@ -84,8 +86,7 @@ async function generateViaPlaywright(query, opts = {}) {
     });
     context = await browser.newContext({
       storageState: parsedState,
-      viewport: { width: 1280, height: 900 },
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+      viewport: { width: 1280, height: 900 }
     });
     await context.grantPermissions(['clipboard-read', 'clipboard-write']);
     page = await context.newPage();
